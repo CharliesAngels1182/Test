@@ -1,0 +1,373 @@
+<!--
+Cyber Lab - Single-file HTML5 Game
+File: cyber_lab_game.html
+How to run: save this file and open in a modern browser (Chrome/Edge/Firefox).
+Controls: Arrow keys or WASD to move. Space to dash (short burst). P to pause. R to restart.
+Goal: Collect data packets and avoid firewalls. Survive as long as possible and score points.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Cyber Lab — HTML5 Canvas Game</title>
+  <style>
+    :root{
+      --bg:#071021; --panel:#0f1724; --accent:#00e0b8; --danger:#ff4655; --muted:#9aa7b2;
+      --glass: rgba(255,255,255,0.03);
+      font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;
+    }
+    html,body{height:100%;margin:0;background:linear-gradient(180deg,var(--bg),#02040a);color:#e6f6f1}
+    .wrap{display:flex;flex-direction:column;height:100vh;padding:18px;box-sizing:border-box;gap:12px}
+    header{display:flex;align-items:center;justify-content:space-between}
+    h1{font-size:20px;margin:0}
+    .controls{font-size:13px;color:var(--muted)}
+    main{flex:1;display:flex;gap:12px}
+    .game-panel{flex:1;background:var(--panel);border-radius:12px;padding:12px;box-shadow:0 6px 20px rgba(0,0,0,0.6);display:flex;flex-direction:column}
+    canvas{border-radius:8px;background:linear-gradient(180deg, rgba(0,0,0,0.25), rgba(0,0,0,0.12));width:100%;height:100%;display:block}
+    aside{width:280px;min-width:220px;background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent);border-radius:12px;padding:12px;box-sizing:border-box}
+    .stat{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px dashed rgba(255,255,255,0.03);font-size:14px}
+    .big-score{font-size:28px;font-weight:700;color:var(--accent);}
+    .buttons{display:flex;gap:8px;margin-top:10px}
+    button{background:var(--glass);border:1px solid rgba(255,255,255,0.04);color:inherit;padding:8px 10px;border-radius:8px;cursor:pointer}
+    footer{font-size:12px;color:var(--muted);text-align:center}
+    @media (max-width:900px){main{flex-direction:column}aside{width:100%}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Cyber Lab</h1>
+      <div class="controls">Move: ←↑→↓ or WASD • Dash: Space • Pause: P • Restart: R</div>
+    </header>
+
+    <main>
+      <div class="game-panel">
+        <canvas id="game" width="900" height="560"></canvas>
+      </div>
+
+      <aside>
+        <div class="stat"><div>Score</div><div class="big-score" id="score">0</div></div>
+        <div class="stat"><div>Lives</div><div id="lives">3</div></div>
+        <div class="stat"><div>Level</div><div id="level">1</div></div>
+        <div class="stat"><div>Packets Collected</div><div id="packets">0</div></div>
+        <div style="margin-top:12px;color:var(--muted);font-size:13px">Objective: collect glowing data packets and avoid moving firewalls. As level increases, difficulty ramps up.</div>
+        <div class="buttons">
+          <button id="btn-pause">Pause</button>
+          <button id="btn-restart">Restart</button>
+        </div>
+        <hr style="margin:12px 0;border:none;border-top:1px solid rgba(255,255,255,0.03)">
+        <div style="font-size:13px;color:var(--muted)">
+          Tips:
+          <ul style="padding-left:18px;margin:8px 0 0 0">
+            <li>Use dash (space) to quickly evade firewalls.</li>
+            <li>Collect blue packets for points; yellow gives extra time/bonus.</li>
+            <li>Colliding with a firewall costs a life; game ends at 0 lives.</li>
+          </ul>
+        </div>
+      </aside>
+    </main>
+
+    <footer>Made with ❤️ — open the file locally to play.</footer>
+  </div>
+
+  <script>
+    // Cyber Lab game script
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    let W = canvas.width, H = canvas.height;
+
+    // Game state
+    const state = {
+      running: true,
+      paused: false,
+      score: 0,
+      lives: 3,
+      level: 1,
+      packets: 0,
+      time: 0,
+      spawnTimer: 0,
+      enemies: [],
+      items: [],
+    };
+
+    // Player
+    const player = {
+      x: W/2, y: H - 80, r: 16,
+      vx: 0, vy: 0, speed: 2.2, dashSpeed: 6, dashing: false, dashTime:0,
+      color: '#00f5c3'
+    };
+
+    // Input
+    const keys = {};
+    window.addEventListener('keydown', e=>{ keys[e.key.toLowerCase()]=true; if(e.key===' '){ e.preventDefault(); }});
+    window.addEventListener('keyup', e=>{ keys[e.key.toLowerCase()]=false; });
+
+    // Resize to keep canvas crisp on zoom while preserving internal resolution
+    function fitCanvas(){
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = rect.width / canvas.width;
+      const scaleY = rect.height / canvas.height;
+      ctx.setTransform(1,0,0,1,0,0);
+      ctx.scale(1,1);
+    }
+
+    // Utility
+    function rand(min,max){return Math.random()*(max-min)+min}
+    function dist(a,b){const dx=a.x-b.x, dy=a.y-b.y; return Math.sqrt(dx*dx+dy*dy)}
+
+    // Enemy (firewall)
+    function spawnEnemy(){
+      const side = Math.random()<0.5? 'left':'right';
+      const y = rand(60,H-120);
+      const speed = rand(1.2 + state.level*0.2, 2.2 + state.level*0.5);
+      const enemy = {x: side==='left'? -40: W+40, y, vx: side==='left'? speed: -speed, vy:0, w:48, h:24, angle:0, type:'firewall'};
+      state.enemies.push(enemy);
+    }
+
+    // Item (data packet)
+    function spawnPacket(){
+      const x = rand(60, W-60);
+      const y = rand(60, H-140);
+      const type = Math.random()<0.12? 'gold' : 'blue';
+      const pkt = {x,y,r:10, type, t:0};
+      state.items.push(pkt);
+    }
+
+    // Collision helpers
+    function circleRectCollision(cx,cy,r,rx,ry,rw,rh){
+      const testX = Math.max(rx, Math.min(cx, rx+rw));
+      const testY = Math.max(ry, Math.min(cy, ry+rh));
+      const dx = cx - testX, dy = cy - testY;
+      return (dx*dx + dy*dy) <= r*r;
+    }
+
+    // Game loop
+    let last = performance.now();
+    function update(dt){
+      if(state.paused) return;
+      state.time += dt;
+
+      // movement
+      let ax=0, ay=0;
+      if(keys['arrowleft']||keys['a']) ax=-1;
+      if(keys['arrowright']||keys['d']) ax=1;
+      if(keys['arrowup']||keys['w']) ay=-1;
+      if(keys['arrowdown']||keys['s']) ay=1;
+      const mag = Math.hypot(ax,ay) || 1;
+      player.vx = (ax/mag) * player.speed;
+      player.vy = (ay/mag) * player.speed;
+
+      // dash
+      if(keys[' ']){
+        if(!player.dashing){ player.dashing = true; player.dashTime = 12; }
+      }
+      if(player.dashing){
+        player.dashTime -= 1;
+        player.vx *= player.dashSpeed;
+        player.vy *= player.dashSpeed;
+        if(player.dashTime<=0) player.dashing=false;
+      }
+
+      player.x += player.vx * (dt*0.06);
+      player.y += player.vy * (dt*0.06);
+      player.x = Math.max(player.r+8, Math.min(W-player.r-8, player.x));
+      player.y = Math.max(player.r+8, Math.min(H-player.r-8, player.y));
+
+      // spawn logic
+      state.spawnTimer += dt;
+      if(state.spawnTimer > Math.max(400 - state.level*10, 140)){
+        state.spawnTimer = 0;
+        spawnEnemy();
+      }
+      if(Math.random() < 0.02 + state.level*0.002) spawnPacket();
+
+      // update enemies
+      for(let i=state.enemies.length-1;i>=0;i--){
+        const e = state.enemies[i];
+        e.x += e.vx * (dt*0.04);
+        e.angle += 0.06 * (e.vx>0?1:-1);
+        // remove if offscreen
+        if(e.x < -120 || e.x > W+120) state.enemies.splice(i,1);
+      }
+
+      // items time
+      for(let i=state.items.length-1;i>=0;i--){
+        const it = state.items[i];
+        it.t += dt;
+        if(it.t>1200) state.items.splice(i,1);
+      }
+
+      // collisions: player <-> enemies
+      for(let i=state.enemies.length-1;i>=0;i--){
+        const e = state.enemies[i];
+        if(circleRectCollision(player.x,player.y,player.r, e.x - e.w/2, e.y - e.h/2, e.w, e.h)){
+          // hit
+          state.enemies.splice(i,1);
+          loseLife();
+        }
+      }
+
+      // collisions: player <-> items
+      for(let i=state.items.length-1;i>=0;i--){
+        const it = state.items[i];
+        const d = Math.hypot(player.x-it.x, player.y-it.y);
+        if(d < player.r + it.r){
+          // collect
+          state.items.splice(i,1);
+          collectItem(it);
+        }
+      }
+
+      // level progression
+      if(state.packets >= state.level * 5){
+        state.level += 1;
+        state.packets = 0;
+        state.score += 150;
+      }
+
+      // update UI
+      document.getElementById('score').textContent = Math.floor(state.score);
+      document.getElementById('lives').textContent = state.lives;
+      document.getElementById('level').textContent = state.level;
+      document.getElementById('packets').textContent = state.packets;
+
+    }
+
+    function loseLife(){
+      state.lives -= 1;
+      state.score = Math.max(0, state.score - 50);
+      // flash effect
+      flash(220);
+      if(state.lives <= 0){
+        gameOver();
+      }
+    }
+
+    function collectItem(it){
+      if(it.type === 'blue'){
+        state.score += 40 + state.level*8;
+        state.packets += 1;
+      } else if(it.type === 'gold'){
+        state.score += 120 + state.level*20;
+        state.lives = Math.min(5, state.lives+1);
+      }
+    }
+
+    let flashTimer = 0;
+    function flash(ms){ flashTimer = ms; }
+
+    function gameOver(){
+      state.paused = true;
+      state.running = false;
+      // show overlay
+      setTimeout(()=>{
+        const c = confirm('Game Over — score: '+Math.floor(state.score)+'\nRestart?');
+        if(c) resetGame();
+      },100);
+    }
+
+    function resetGame(){
+      state.score = 0; state.lives = 3; state.level = 1; state.packets = 0; state.time=0; state.enemies=[]; state.items=[]; state.spawnTimer=0; state.running = true; state.paused=false; player.x=W/2; player.y=H-80;
+    }
+
+    // Draw functions
+    function draw(){
+      // background
+      ctx.clearRect(0,0,W,H);
+      // subtle grid
+      const g = 28;
+      ctx.save();
+      ctx.globalAlpha = 0.035;
+      ctx.strokeStyle = '#00ffd1';
+      for(let x=0;x<W;x+=g){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+      for(let y=0;y<H;y+=g){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+      ctx.restore();
+
+      // items
+      for(const it of state.items){
+        ctx.save();
+        const glow = 8 + Math.sin(state.time*0.008 + it.x*0.01)*4;
+        ctx.beginPath(); ctx.fillStyle = 'rgba(0,180,255,0.06)'; ctx.arc(it.x,it.y,it.r+glow,0,Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.fillStyle = it.type==='gold'? '#ffd36b':'#6fe8ff'; ctx.arc(it.x,it.y,it.r,0,Math.PI*2); ctx.fill();
+        ctx.restore();
+      }
+
+      // enemies
+      for(const e of state.enemies){
+        ctx.save();
+        ctx.translate(e.x, e.y);
+        ctx.rotate(e.angle);
+        // firewall body
+        ctx.fillStyle = 'rgba(255,70,85,0.95)';
+        roundedRect(ctx, -e.w/2, -e.h/2, e.w, e.h, 6);
+        ctx.fill();
+        // spikes
+        for(let i=-2;i<=2;i++){
+          ctx.beginPath(); ctx.moveTo(i*10, -e.h/2); ctx.lineTo(i*10+6, -e.h/2-12); ctx.lineTo(i*10+12, -e.h/2); ctx.closePath(); ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.fill();
+          ctx.beginPath(); ctx.moveTo(i*10, e.h/2); ctx.lineTo(i*10+6, e.h/2+12); ctx.lineTo(i*10+12, e.h/2); ctx.closePath(); ctx.fillStyle='rgba(0,0,0,0.14)'; ctx.fill();
+        }
+        ctx.restore();
+      }
+
+      // player
+      ctx.save();
+      // glow
+      ctx.beginPath(); ctx.arc(player.x, player.y, player.r+8,0,Math.PI*2); ctx.fillStyle='rgba(0,224,184,0.05)'; ctx.fill();
+      // ship
+      ctx.beginPath(); ctx.fillStyle=player.color; ctx.moveTo(player.x, player.y-14); ctx.lineTo(player.x-12, player.y+12); ctx.lineTo(player.x+12, player.y+12); ctx.closePath(); ctx.fill();
+      // dash trail
+      if(player.dashing){ ctx.save(); ctx.globalAlpha=0.25; ctx.beginPath(); ctx.moveTo(player.x-6,player.y+6); ctx.lineTo(player.x+6,player.y+6); ctx.lineTo(player.x,player.y+40); ctx.closePath(); ctx.fillStyle='rgba(0,224,184,0.12)'; ctx.fill(); ctx.restore(); }
+      ctx.restore();
+
+      // HUD overlay
+      ctx.save();
+      if(flashTimer>0){
+        ctx.fillStyle = 'rgba(255,255,255,'+Math.min(0.22, flashTimer/220)+')'; ctx.fillRect(0,0,W,H);
+        flashTimer -= 16;
+      }
+      ctx.restore();
+    }
+
+    function roundedRect(ctx,x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+
+    // Main loop
+    function loop(now){
+      const dt = Math.min(60, now - last);
+      last = now;
+      if(state.running && !state.paused) update(dt);
+      draw();
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+
+    // UI buttons
+    document.getElementById('btn-pause').addEventListener('click', ()=>{ state.paused = !state.paused; document.getElementById('btn-pause').textContent = state.paused? 'Resume':'Pause'; });
+    document.getElementById('btn-restart').addEventListener('click', ()=>{ resetGame(); });
+
+    // keyboard extras
+    window.addEventListener('keydown', e=>{
+      if(e.key.toLowerCase()==='p'){ state.paused = !state.paused; document.getElementById('btn-pause').textContent = state.paused? 'Resume':'Pause'; }
+      if(e.key.toLowerCase()==='r'){ resetGame(); }
+    });
+
+    // initial population
+    for(let i=0;i<3;i++) spawnEnemy();
+    for(let i=0;i<4;i++) spawnPacket();
+
+    // keep canvas sharp on high-DPI displays
+    function fixDPI(){
+      const dpr = window.devicePixelRatio || 1;
+      const styleW = canvas.clientWidth || canvas.width;
+      const styleH = canvas.clientHeight || canvas.height;
+      canvas.width = Math.floor(styleW * dpr);
+      canvas.height = Math.floor(styleH * dpr);
+      W = canvas.width; H = canvas.height;
+      ctx.setTransform(dpr,0,0,dpr,0,0);
+    }
+    window.addEventListener('resize', ()=>{ fixDPI(); });
+    fixDPI();
+
+  </script>
+</body>
+</html>
